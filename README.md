@@ -43,7 +43,3 @@ Dělá to každá mapová aplikace včetně Stravy, ale je fér to vědět.
 
 Mapy: [OpenTopoMap](https://opentopomap.org/) (CC-BY-SA, data © OpenStreetMap
 přispěvatelé, SRTM) a Esri. Knihovna [Leaflet](https://leafletjs.com/) (BSD-2-Clause).
-
-Oba jsou cizí servery s vlastními podmínkami použití. Pro občasné osobní použití
-v pohodě; kdyby se z toho stal nástroj s tisíci uživateli, patří se přejít na placené
-dlaždice s vlastním API klíčem.
