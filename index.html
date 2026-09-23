@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<!--
+  GPX Fixer — oprava GPS stop (skoky, výpadky signálu, aktivita rozdělená na díly).
+
+  Jeden soubor, otevírá se dvojklikem. GPX se nikam neodesílá, všechno počítá
+  prohlížeč u tebe. Z internetu se tahá jen Leaflet a mapové dlaždice.
+
+  Mapové podklady: OpenTopoMap (CC-BY-SA, data © OpenStreetMap přispěvatelé, SRTM)
+  a Esri. Obojí jsou cizí servery s vlastními podmínkami použití — při šíření mezi
+  víc lidí si je přečti (opentopomap.org, esri.com), zátěž jde na ně.
+
+  Knihovna Leaflet (BSD-2-Clause) se načítá z unpkg.com.
+-->
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPX Fixer</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+:root{
+  --bg:#f6f7f9; --panel:#fff; --ink:#1c1f23; --muted:#6b7280; --line:#e3e6ea;
+  --accent:#2f6fed; --bad:#e0433f; --warn:#d98314; --ok:#1f9d55;
+}
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;color:var(--ink);background:var(--bg);height:100vh;display:flex;flex-direction:column;overflow:hidden}
+header{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);flex:none}
+header h1{font-size:15px;margin:0;font-weight:650;letter-spacing:-.01em}
+header .sp{flex:1}
+button{font:inherit;border:1px solid var(--line);background:#fff;color:var(--ink);padding:6px 12px;border-radius:7px;cursor:pointer}
+button:hover:not(:disabled){background:#f0f2f5}
+button:disabled{opacity:.45;cursor:default}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.primary:hover:not(:disabled){background:#2560d8}
+button.sm{padding:4px 9px;font-size:12.5px}
+main{flex:1;display:flex;min-height:0}
+#side{width:340px;flex:none;background:var(--panel);border-right:1px solid var(--line);overflow-y:auto;padding:14px}
+#map{flex:1;background:#dfe3e8}
+.drop{border:2px dashed var(--line);border-radius:10px;padding:26px 16px;text-align:center;color:var(--muted);cursor:pointer}
+.drop:hover,.drop.over{border-color:var(--accent);color:var(--accent);background:#f4f7ff}
+h2{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:20px 0 8px;font-weight:650}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.stats div{background:var(--panel);padding:8px 10px}
+.stats span{display:block;font-size:11px;color:var(--muted)}
+.stats b{font-size:15px;font-weight:650}
+.issue{border:1px solid var(--line);border-radius:9px;padding:10px;margin-bottom:9px;cursor:pointer}
+.issue:hover{border-color:var(--accent)}
+.issue.sel{border-color:var(--accent);box-shadow:0 0 0 2px #2f6fed22}
+.issue .tag{display:inline-block;font-size:10.5px;font-weight:650;text-transform:uppercase;letter-spacing:.04em;padding:2px 6px;border-radius:4px;margin-bottom:5px}
+.tag.spike{background:#fdeaea;color:var(--bad)}
+.tag.missing{background:#fdf1e2;color:var(--warn)}
+.tag.pause{background:#eaf5ee;color:var(--ok)}
+.issue p{margin:3px 0;font-size:12.5px;color:var(--muted)}
+.issue .acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.empty{color:var(--muted);font-size:13px;padding:10px 0}
+.hint{font-size:12px;color:var(--muted);margin:8px 0 0}
+#tilewarn{position:absolute;z-index:1000;top:12px;left:12px;right:60px;background:#fdf1e2;border:1px solid #d98314;color:#8a5208;border-radius:9px;padding:8px 11px;font-size:12.5px;display:none}
+#tilewarn.on{display:block}
+#drawbar{position:absolute;z-index:1000;top:12px;left:50%;transform:translateX(-50%);background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:9px 12px;display:none;gap:9px;align-items:center;box-shadow:0 3px 14px #0002}
+#drawbar.on{display:flex}
+#drawbar span{font-size:12.5px;color:var(--muted)}
+.wrap{position:relative;flex:1;display:flex}
+label.opt{display:flex;align-items:center;gap:7px;font-size:12.5px;margin:6px 0;color:var(--muted)}
+label.opt input{width:66px;padding:3px 5px;border:1px solid var(--line);border-radius:5px;font:inherit}
+</style>
+</head>
+<body>
+<header>
+  <h1>GPX Fixer</h1>
+  <span class="sp"></span>
+  <button id="btnLoad">Načíst GPX…</button>
+  <button id="btnExport" class="primary" disabled>Stáhnout opravený GPX</button>
+  <input type="file" id="file" accept=".gpx" multiple hidden>
+</header>
+<main>
+  <div id="side">
+    <div class="drop" id="drop">Přetáhni sem GPX soubor<br><small>(nebo víc dílů najednou — spojí se)</small></div>
+    <div id="info"></div>
+  </div>
+  <div class="wrap">
+    <div id="map"></div>
+    <div id="tilewarn">Mapové podklady se nenačetly — zkontroluj připojení, nebo přepni vrstvu ikonou vpravo nahoře. Opravovat jde i bez mapy.</div>
+    <div id="drawbar">
+      <span id="drawmsg"></span>
+      <button class="sm" id="drawUndo">Zpět</button>
+      <button class="sm" id="drawCancel">Zrušit</button>
+      <button class="sm primary" id="drawDone">Hotovo</button>
+    </div>
+  </div>
+</main>
+<script>
+/* ---------- geometrie ---------- */
+const R = 6371000;
+const rad = d => d * Math.PI / 180;
+
+function dist(a, b) {
+  const dla = rad(b.lat - a.lat), dlo = rad(b.lon - a.lon);
+  const h = Math.sin(dla/2)**2 + Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(dlo/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+// lokální rovinná projekce (metry) — na vzdálenosti pár set metrů dost přesná
+function xy(p, ref) {
+  return { x: rad(p.lon - ref.lon) * R * Math.cos(rad(ref.lat)), y: rad(p.lat - ref.lat) * R };
+}
+// kolmá vzdálenost bodu od úsečky a–b
+function crossTrack(p, a, b) {
+  const P = xy(p, a), A = { x: 0, y: 0 }, B = xy(b, a);
+  const dx = B.x - A.x, dy = B.y - A.y, L2 = dx*dx + dy*dy;
+  if (L2 === 0) return Math.hypot(P.x, P.y);
+  let t = (P.x*dx + P.y*dy) / L2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(P.x - t*dx, P.y - t*dy);
+}
+const secs = (a, b) => (b.t - a.t) / 1000;
+function speed(a, b) { const s = secs(a, b); return s > 0 ? dist(a, b) / s : Infinity; }
+
+function fmtDur(s) {
+  s = Math.round(s);
+  const h = Math.floor(s/3600), m = Math.floor((s%3600)/60);
+  return h ? `${h}:${String(m).padStart(2,'0')}:${String(s%60).padStart(2,'0')}` : `${m}:${String(s%60).padStart(2,'0')}`;
+}
+const fmtClock = ms => new Date(ms).toLocaleTimeString('cs-CZ', { hour12: false });
+const isoZ = ms => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+/* ---------- parsování ---------- */
+const EXT_KEYS = ['hr', 'cad', 'atemp', 'power'];
+const NS_TPX = 'http://www.garmin.com/xmlschemas/TrackPointExtension/v1';
+
+function parseGPX(text, fname) {
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  if (doc.querySelector('parsererror')) throw new Error(fname + ': neplatné XML');
+  const trk = doc.querySelector('trk');
+  const segs = [];
+  doc.querySelectorAll('trkseg').forEach(sg => {
+    const pts = [];
+    sg.querySelectorAll('trkpt').forEach(tp => {
+      const lat = parseFloat(tp.getAttribute('lat')), lon = parseFloat(tp.getAttribute('lon'));
+      if (!isFinite(lat) || !isFinite(lon)) return;
+      const e = tp.querySelector('ele'), t = tp.querySelector('time');
+      // rozšíření (tep, kadence, teplota, výkon) — prefix ignorujeme, jdeme po localName
+      let x = null;
+      const xe = tp.getElementsByTagName('extensions')[0];
+      if (xe) {
+        for (const el of xe.getElementsByTagName('*')) {
+          const k = (el.localName || '').toLowerCase();
+          if (!EXT_KEYS.includes(k)) continue;
+          const v = parseFloat(el.textContent);
+          if (isFinite(v)) (x = x || {})[k] = v;
+        }
+      }
+      pts.push({
+        lat, lon,
+        ele: e ? parseFloat(e.textContent) : null,
+        t: t ? Date.parse(t.textContent) : null,
+        x
+      });
+    });
+    if (pts.length) segs.push(pts);
+  });
+  if (!segs.length) throw new Error(fname + ': žádné body trasy');
+  if (segs.some(s => s.some(p => p.t === null || isNaN(p.t))))
+    throw new Error(fname + ': body nemají časové značky, nelze analyzovat');
+  const ext = doc.querySelectorAll('trkpt extensions').length;
+  return {
+    ext,
+    name: trk?.querySelector('name')?.textContent?.trim() || fname.replace(/\.gpx$/i, ''),
+    type: trk?.querySelector('type')?.textContent?.trim() || '',
+    segs
+  };
+}
+
+/* ---------- detekce problémů ---------- */
+// Práh rychlosti podle typu aktivity — s rezervou, jde o "tohle člověk fyzicky nemohl".
+const SPEED_LIMITS = { running: 8, hiking: 4, walking: 4, cycling: 25, ride: 25, run: 8, walk: 4 };
+function speedLimit(type) { return SPEED_LIMITS[(type || '').toLowerCase()] || 8; }
+
+function analyze(track, opt) {
+  const issues = [];
+  const vmax = opt.vmax, xtMax = opt.xtMax;
+
+  track.segs.forEach((pts, si) => {
+    /* --- A. skoky: bod(y) mimo, trasa se hned vrátí --- */
+    const bad = new Array(pts.length).fill(false);
+
+    // A1: nefyzikální rychlost. Kotva musí couvnout přes body, do kterých vede
+    //     nefyzikální přechod — jinak bychom kotvili na samotném ulétlém bodě.
+    for (let i = 1; i < pts.length; i++) {
+      if (speed(pts[i-1], pts[i]) <= vmax) continue;
+      let a = i - 1;
+      while (a > 0 && speed(pts[a-1], pts[a]) > vmax) a--;
+      let b = i;
+      while (b < pts.length && speed(pts[a], pts[b]) > vmax) b++;
+      if (b < pts.length) for (let k = a + 1; k < b; k++) bad[k] = true;
+      i = b;
+    }
+    // A2: body, co sedí rychlostně, ale leží stranou od trasy (zbytek po skoku)
+    for (let i = 2; i < pts.length - 2; i++) {
+      if (bad[i]) continue;
+      let a = i - 1, b = i + 1;
+      while (a > 0 && bad[a]) a--;
+      while (b < pts.length - 1 && bad[b]) b++;
+      if (crossTrack(pts[i], pts[a], pts[b]) > xtMax) bad[i] = true;
+    }
+    // shluky vadných bodů -> jeden problém
+    let i = 0;
+    while (i < pts.length) {
+      if (!bad[i]) { i++; continue; }
+      let j = i;
+      while (j + 1 < pts.length && bad[j+1]) j++;
+      if (i > 0 && j < pts.length - 1) {
+        const a = i - 1, b = j + 1;
+        const off = Math.max(...pts.slice(i, j+1).map(p => crossTrack(p, pts[a], pts[b])));
+        let thru = 0;
+        for (let k = a; k < b; k++) thru += dist(pts[k], pts[k+1]);
+        const extra = thru - dist(pts[a], pts[b]);
+        // Skok = bod leží mimo trasu, nebo vyrábí výrazně falešnou kilometráž.
+        // Samotná vysoká rychlost nestačí — tu při 1s vzorkování vyrobí i běžný šum
+        // u bodu, který na trase sedí správně.
+        if (off > xtMax || extra > 50) {
+          issues.push({
+            kind: 'spike', si, a, b,
+            n: j - i + 1, off, extra,
+            span: secs(pts[a], pts[b]),
+            key: `s${si}-${pts[a].t}`
+          });
+        }
+      }
+      i = j + 1;
+    }
+
+    /* --- B. mezery uvnitř segmentu --- */
+    for (let k = 1; k < pts.length; k++) {
+      const gap = secs(pts[k-1], pts[k]);
+      if (gap < opt.gapSec) continue;
+      const d = dist(pts[k-1], pts[k]);
+      issues.push({
+        kind: 'gap', si, a: k - 1, b: k, sameSeg: true,
+        gap, d, pause: d <= opt.pauseR,
+        key: `g${si}-${pts[k-1].t}`
+      });
+    }
+  });
+
+  /* --- C. mezery mezi segmenty (spojené díly / pauza) --- */
+  for (let si = 0; si + 1 < track.segs.length; si++) {
+    const A = track.segs[si], B = track.segs[si+1];
+    const a = A[A.length-1], b = B[0];
+    const gap = secs(a, b), d = dist(a, b);
+    issues.push({
+      kind: 'gap', si, a: A.length - 1, b: 0, sameSeg: false,
+      gap, d, pause: d <= opt.pauseR,
+      key: `x${si}-${a.t}`
+    });
+  }
+  return issues;
+}
+
+/* ---------- opravy ---------- */
+// Nahradí body mezi kotvami řadou podél zadané cesty (nebo přímky), časy podle ujeté vzdálenosti.
+function buildBridge(a, b, via, stepSec) {
+  const path = [a, ...via, b];
+  const legs = [];
+  let total = 0;
+  for (let i = 1; i < path.length; i++) { const d = dist(path[i-1], path[i]); legs.push(d); total += d; }
+  const span = secs(a, b);
+  const out = [];
+  const n = Math.max(1, Math.round(span / stepSec));
+  for (let s = 1; s < n; s++) {
+    const frac = s / n;
+    const target = total * frac;   // konstantní rychlost po celé cestě
+    let acc = 0, seg = 0;
+    while (seg < legs.length - 1 && acc + legs[seg] < target) { acc += legs[seg]; seg++; }
+    const local = legs[seg] > 0 ? (target - acc) / legs[seg] : 0;
+    const p1 = path[seg], p2 = path[seg+1];
+    // tep/kadenci dopočítáme lineárně mezi kotvami — jen klíče, které mají obě
+    let x = null;
+    if (a.x && b.x) {
+      for (const k of EXT_KEYS) {
+        if (a.x[k] == null || b.x[k] == null) continue;
+        (x = x || {})[k] = Math.round(a.x[k] + frac * (b.x[k] - a.x[k]));
+      }
+    }
+    out.push({
+      lat: p1.lat + local * (p2.lat - p1.lat),
+      lon: p1.lon + local * (p2.lon - p1.lon),
+      ele: (a.ele != null && b.ele != null) ? a.ele + frac * (b.ele - a.ele) : (a.ele ?? null),
+      t: a.t + Math.round(frac * span * 1000),
+      x, gen: true
+    });
+  }
+  return out;
+}
+/* ---------- stav ---------- */
+let track = null, issues = [], sel = null, ignored = new Set();
+const opt = { vmax: 8, xtMax: 15, gapSec: 20, pauseR: 60, stepSec: 5 };
+
+/* ---------- mapa ---------- */
+const map = L.map('map', { zoomControl: true }).setView([49.75, 18.29], 13);
+// Podklady bez API klíče. Ověřeno v praxi, co projde ze stránky otevřené z file://:
+//  - OpenTopoMap FUNGUJE (a je z tohohle výběru na české cesty nejlepší)
+//  - dlaždice přímo z openstreetmap.org NE — odmítají requesty bez Refereru (403)
+//  - CARTO bez klíče vrací HTTP 200 s vodoznakem "API KEY REQUIRED", takže se ani
+//    nespustí tileerror; vypadá to jako funkční mapa, ale není
+const layers = {
+  'Turistická': L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+    { maxZoom: 17, subdomains: 'abc',
+      attribution: '© OpenStreetMap přispěvatelé, SRTM | © <a href="https://opentopomap.org/" target="_blank" rel="noopener">OpenTopoMap</a> (CC-BY-SA)' }),
+  'Mapa': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+    { maxZoom: 19, attribution: 'Podklady © Esri' }),
+  'Satelit': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    { maxZoom: 19, attribution: 'Podklady © Esri' }),
+  'Topo (Esri)': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+    { maxZoom: 19, attribution: 'Podklady © Esri' })
+};
+layers['Turistická'].addTo(map);
+let tileWarned = false;
+Object.values(layers).forEach(l => l.on('tileerror', () => {
+  if (tileWarned) return;
+  tileWarned = true;
+  const w = document.getElementById('tilewarn');
+  if (w) w.classList.add('on');
+}));
+L.control.layers(layers, null, { position: 'topright' }).addTo(map);
+
+let gTrack = L.layerGroup().addTo(map);
+let gMarks = L.layerGroup().addTo(map);
+let gDraw  = L.layerGroup().addTo(map);
+
+function drawTrack() {
+  gTrack.clearLayers(); gMarks.clearLayers();
+  if (!track) return;
+  track.segs.forEach(pts => {
+    L.polyline(pts.map(p => [p.lat, p.lon]), { color: '#2f6fed', weight: 3, opacity: .85 }).addTo(gTrack);
+  });
+  issues.filter(x => !ignored.has(x.key)).forEach(x => {
+    const p = track.segs[x.si][x.a];
+    const col = x.kind === 'spike' ? '#e0433f' : (x.pause ? '#1f9d55' : '#d98314');
+    L.circleMarker([p.lat, p.lon], { radius: 7, color: '#fff', weight: 2, fillColor: col, fillOpacity: 1 })
+      .addTo(gMarks).on('click', () => selectIssue(x.key));
+  });
+}
+
+function anchorsOf(x) {
+  const A = track.segs[x.si][x.a];
+  const B = x.sameSeg === false ? track.segs[x.si+1][0] : track.segs[x.si][x.b];
+  return [A, B];
+}
+
+function highlight(x) {
+  gDraw.clearLayers();
+  if (!x) return;
+  const [A, B] = anchorsOf(x);
+  if (x.kind === 'spike') {
+    const seg = track.segs[x.si].slice(x.a, x.b + 1);
+    L.polyline(seg.map(p => [p.lat, p.lon]), { color: '#e0433f', weight: 5, opacity: .9 }).addTo(gDraw);
+  } else {
+    L.polyline([[A.lat, A.lon], [B.lat, B.lon]], { color: '#d98314', weight: 3, dashArray: '7,6' }).addTo(gDraw);
+  }
+  [[A, 'A — poslední dobrý bod'], [B, 'B — pokračování']].forEach(([p, lbl]) => {
+    L.circleMarker([p.lat, p.lon], { radius: 6, color: '#fff', weight: 2, fillColor: '#1f9d55', fillOpacity: 1 })
+      .addTo(gDraw).bindTooltip(lbl);
+  });
+  map.fitBounds(L.latLngBounds([[A.lat, A.lon], [B.lat, B.lon]]).pad(0.9), { maxZoom: 17 });
+}
+
+/* ---------- kreslení trasy myší ---------- */
+let draw = null;
+function startDraw(x) {
+  draw = { x, via: [], line: null, dots: L.layerGroup().addTo(map) };
+  document.getElementById('drawbar').classList.add('on');
+  document.getElementById('drawmsg').textContent = 'Klikej po cestě z A do B. Body A a B nepřidávej.';
+  map.getContainer().style.cursor = 'crosshair';
+  map.on('click', onDrawClick);
+}
+function onDrawClick(e) {
+  draw.via.push({ lat: e.latlng.lat, lon: e.latlng.lng });
+  redrawDraw();
+}
+function redrawDraw() {
+  const [A, B] = anchorsOf(draw.x);
+  draw.dots.clearLayers();
+  const pts = [[A.lat, A.lon], ...draw.via.map(p => [p.lat, p.lon]), [B.lat, B.lon]];
+  L.polyline(pts, { color: '#e0433f', weight: 4 }).addTo(draw.dots);
+  draw.via.forEach(p => L.circleMarker([p.lat, p.lon],
+    { radius: 4, color: '#fff', weight: 2, fillColor: '#e0433f', fillOpacity: 1 }).addTo(draw.dots));
+  let d = 0; const all = [A, ...draw.via, B];
+  for (let i = 1; i < all.length; i++) d += dist(all[i-1], all[i]);
+  const span = secs(A, B);
+  document.getElementById('drawmsg').textContent =
+    `${Math.round(d)} m za ${fmtDur(span)} → ${span > 0 ? (d/span).toFixed(2) : '–'} m/s`;
+}
+function endDraw(apply) {
+  map.off('click', onDrawClick);
+  map.getContainer().style.cursor = '';
+  document.getElementById('drawbar').classList.remove('on');
+  if (draw) { draw.dots.remove(); }
+  const d = draw; draw = null;
+  if (apply && d) applyFix(d.x, d.via);
+  else render();
+}
+
+/* ---------- aplikace opravy ---------- */
+function applyFix(x, via) {
+  const [A, B] = anchorsOf(x);
+  const bridge = buildBridge(A, B, via, opt.stepSec);
+  if (x.kind === 'spike') {
+    track.segs[x.si].splice(x.a + 1, x.b - x.a - 1, ...bridge);
+  } else if (x.sameSeg) {
+    track.segs[x.si].splice(x.a + 1, 0, ...bridge);
+  } else {
+    track.segs[x.si] = track.segs[x.si].concat(bridge, track.segs[x.si+1]);
+    track.segs.splice(x.si + 1, 1);
+  }
+  sel = null;
+  render();
+}
+function splitAsPause(x) {
+  // mezera uvnitř segmentu -> rozdělit na dva segmenty (Strava ji vezme jako pauzu)
+  const pts = track.segs[x.si];
+  track.segs.splice(x.si, 1, pts.slice(0, x.b), pts.slice(x.b));
+  ignored.add(x.key);
+  sel = null;
+  render();
+}
+
+/* ---------- statistiky ---------- */
+function stats() {
+  let d = 0, moving = 0, up = 0, n = 0;
+  let t0 = Infinity, t1 = -Infinity;
+  track.segs.forEach(pts => {
+    n += pts.length;
+    t0 = Math.min(t0, pts[0].t); t1 = Math.max(t1, pts[pts.length-1].t);
+    for (let i = 1; i < pts.length; i++) {
+      d += dist(pts[i-1], pts[i]);
+      moving += secs(pts[i-1], pts[i]);
+      if (pts[i].ele != null && pts[i-1].ele != null) {
+        const dz = pts[i].ele - pts[i-1].ele;
+        if (dz > 0) up += dz;
+      }
+    }
+  });
+  return { d, n, elapsed: (t1 - t0) / 1000, moving, up };
+}
+
+/* ---------- export ---------- */
+const esc = s => String(s).replace(/[<>&'"]/g, c => ({ '<':'&lt;','>':'&gt;','&':'&amp;',"'":'&apos;','"':'&quot;' }[c]));
+function buildGPX() {
+  let o = '<?xml version="1.0" encoding="UTF-8"?>\n';
+  o += '<gpx creator="GPX Fixer" version="1.1" xmlns="http://www.topografix.com/GPX/1/1"';
+  o += ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"';
+  o += ` xmlns:gpxtpx="${NS_TPX}"`;
+  o += ' xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">\n';
+  o += ` <metadata>\n  <time>${isoZ(track.segs[0][0].t)}</time>\n </metadata>\n`;
+  o += ` <trk>\n  <name>${esc(track.name)}</name>\n`;
+  if (track.type) o += `  <type>${esc(track.type)}</type>\n`;
+  track.segs.forEach(pts => {
+    o += '  <trkseg>\n';
+    pts.forEach(p => {
+      o += `   <trkpt lat="${p.lat.toFixed(7)}" lon="${p.lon.toFixed(7)}">\n`;
+      if (p.ele != null) o += `    <ele>${p.ele.toFixed(1)}</ele>\n`;
+      o += `    <time>${isoZ(p.t)}</time>\n`;
+      if (p.x) {
+        o += '    <extensions>\n     <gpxtpx:TrackPointExtension>\n';
+        for (const k of EXT_KEYS)
+          if (p.x[k] != null) o += `      <gpxtpx:${k}>${p.x[k]}</gpxtpx:${k}>\n`;
+        o += '     </gpxtpx:TrackPointExtension>\n    </extensions>\n';
+      }
+      o += '   </trkpt>\n';
+    });
+    o += '  </trkseg>\n';
+  });
+  return o + ' </trk>\n</gpx>\n';
+}
+/* ---------- UI ---------- */
+const $ = id => document.getElementById(id);
+
+function render() {
+  if (!track) return;
+  issues = analyze(track, opt);
+  drawTrack();
+  const live = issues.filter(x => !ignored.has(x.key));
+  const st = stats();
+
+  let h = `<h2>Trasa</h2><div style="font-weight:650;margin-bottom:8px">${esc(track.name)}</div>`;
+  h += `<div class="stats">
+    <div><span>Vzdálenost</span><b>${(st.d/1000).toFixed(2)} km</b></div>
+    <div><span>Celkový čas</span><b>${fmtDur(st.elapsed)}</b></div>
+    <div><span>Bodů</span><b>${st.n.toLocaleString('cs-CZ')}</b></div>
+    <div><span>Nastoupáno</span><b>${Math.round(st.up)} m</b></div>
+  </div>`;
+  if (track.ext)
+    h += `<p class="hint" style="color:var(--ok)">✓ Tep/kadence u ${track.ext.toLocaleString('cs-CZ')} bodů — zachová se, u dopočítaných se dointerpoluje.</p>`;
+  if (track.segs.length > 1)
+    h += `<p class="hint">${track.segs.length} segmenty → Strava je vezme jako jednu aktivitu s pauzami.</p>`;
+
+  h += `<h2>Nalezené problémy (${live.length})</h2>`;
+  if (!live.length) h += `<div class="empty">Nic k opravě — trasa vypadá čistě. 👍</div>`;
+
+  live.forEach(x => {
+    const [A, B] = anchorsOf(x);
+    const on = sel === x.key ? ' sel' : '';
+    if (x.kind === 'spike') {
+      h += `<div class="issue${on}" data-k="${x.key}">
+        <span class="tag spike">Skok</span>
+        <p><b>${fmtClock(A.t)}</b> — ${x.n} ${x.n === 1 ? 'bod ulétl' : 'bodů ulétlo'} až ${Math.round(x.off)} m mimo trasu</p>
+        <p>Trasa se po ${fmtDur(x.span)} vrací zpět.</p>
+        <div class="acts">
+          <button class="sm primary" data-act="auto">Narovnat</button>
+          <button class="sm" data-act="draw">Nakreslit ručně</button>
+          <button class="sm" data-act="skip">Nechat</button>
+        </div></div>`;
+    } else {
+      const far = !x.pause;
+      h += `<div class="issue${on}" data-k="${x.key}">
+        <span class="tag ${far ? 'missing' : 'pause'}">${far ? 'Výpadek signálu' : 'Pauza'}</span>
+        <p><b>${fmtClock(A.t)} → ${fmtClock(B.t)}</b> — ${fmtDur(x.gap)} bez dat</p>
+        <p>Konce jsou od sebe <b>${Math.round(x.d)} m</b>. ${far
+          ? 'Kus trasy chybí — dokresli, kudy jsi šel.'
+          : 'Vypadá to, že jsi stál na místě.'}</p>
+        <div class="acts">
+          ${far ? '<button class="sm primary" data-act="draw">Dokreslit trasu</button>'
+                : '<button class="sm primary" data-act="skip">Nechat jako pauzu</button>'}
+          <button class="sm" data-act="auto">Spojit přímkou</button>
+          ${x.sameSeg ? '<button class="sm" data-act="split">Rozdělit na pauzu</button>' : ''}
+          ${far ? '<button class="sm" data-act="skip">Nechat</button>' : ''}
+        </div></div>`;
+    }
+  });
+
+  h += `<h2>Citlivost</h2>
+    <label class="opt">Max. rychlost <input id="o_v" type="number" step="0.5" value="${opt.vmax}"> m/s</label>
+    <label class="opt">Odchylka od trasy <input id="o_x" type="number" step="1" value="${opt.xtMax}"> m</label>
+    <label class="opt">Mezera od <input id="o_g" type="number" step="5" value="${opt.gapSec}"> s</label>
+    <label class="opt">Pauza do <input id="o_p" type="number" step="10" value="${opt.pauseR}"> m</label>
+    <p class="hint">Vyšší max. rychlost = míň falešných nálezů. Pro běh ~8, chůzi ~4, kolo ~25 m/s.</p>`;
+
+  $('info').innerHTML = h;
+
+  $('info').querySelectorAll('.issue').forEach(el => {
+    const key = el.dataset.k;
+    el.addEventListener('click', ev => {
+      const act = ev.target.dataset?.act;
+      if (!act) { selectIssue(key); return; }
+      const x = issues.find(i => i.key === key);
+      if (!x) return;
+      if (act === 'auto') applyFix(x, []);
+      else if (act === 'draw') { sel = key; highlight(x); startDraw(x); }
+      else if (act === 'skip') { ignored.add(key); sel = null; render(); }
+      else if (act === 'split') splitAsPause(x);
+    });
+  });
+  ['v:vmax','x:xtMax','g:gapSec','p:pauseR'].forEach(pair => {
+    const [k, name] = pair.split(':');
+    $('o_' + k).addEventListener('change', e => {
+      const v = parseFloat(e.target.value);
+      if (isFinite(v) && v > 0) { opt[name] = v; ignored.clear(); render(); }
+    });
+  });
+  $('btnExport').disabled = false;
+  if (sel) { const x = issues.find(i => i.key === sel); if (x) highlight(x); else gDraw.clearLayers(); }
+}
+
+function selectIssue(key) {
+  sel = key;
+  const x = issues.find(i => i.key === key);
+  render();
+  if (x) highlight(x);
+}
+
+/* ---------- načtení souborů ---------- */
+async function load(files) {
+  try {
+    const parsed = [];
+    for (const f of files) parsed.push(parseGPX(await f.text(), f.name));
+    parsed.sort((a, b) => a.segs[0][0].t - b.segs[0][0].t);
+    // překryv v čase = nedává smysl slepovat
+    for (let i = 1; i < parsed.length; i++) {
+      const prevEnd = parsed[i-1].segs.at(-1).at(-1).t;
+      if (parsed[i].segs[0][0].t < prevEnd)
+        throw new Error('Soubory se časově překrývají — nejspíš to nejsou navazující díly.');
+    }
+    track = {
+      name: parsed[0].name,
+      type: parsed[0].type,
+      segs: parsed.flatMap(p => p.segs),
+      ext: parsed.reduce((s, p) => s + p.ext, 0)
+    };
+    opt.vmax = speedLimit(track.type);
+    ignored.clear(); sel = null;
+    render();
+    const all = track.segs.flat();
+    map.invalidateSize({ animate: false, pan: false });  // kontejner mohl vzniknout až teď
+    const bb = L.latLngBounds(all.map(p => [p.lat, p.lon]));
+    if (bb.isValid()) map.fitBounds(bb.pad(0.05), { animate: false });
+  } catch (e) {
+    alert('Nepovedlo se načíst: ' + e.message);
+  }
+}
+
+$('btnLoad').onclick = () => $('file').click();
+$('file').onchange = e => { if (e.target.files.length) load([...e.target.files]); e.target.value = ''; };
+$('drop').onclick = () => $('file').click();
+['dragenter','dragover'].forEach(ev => document.addEventListener(ev, e => {
+  e.preventDefault(); $('drop').classList.add('over');
+}));
+['dragleave','drop'].forEach(ev => document.addEventListener(ev, e => {
+  e.preventDefault(); if (ev === 'drop' || e.target === document.body) $('drop').classList.remove('over');
+}));
+document.addEventListener('drop', e => {
+  const fs = [...(e.dataTransfer?.files || [])].filter(f => /\.gpx$/i.test(f.name));
+  if (fs.length) load(fs);
+});
+
+$('drawUndo').onclick = () => { if (draw?.via.length) { draw.via.pop(); redrawDraw(); } };
+$('drawCancel').onclick = () => endDraw(false);
+$('drawDone').onclick = () => endDraw(true);
+document.addEventListener('keydown', e => {
+  if (!draw) return;
+  if (e.key === 'Escape') endDraw(false);
+  if (e.key === 'Enter') endDraw(true);
+  if (e.key === 'Backspace') { e.preventDefault(); if (draw.via.length) { draw.via.pop(); redrawDraw(); } }
+});
+
+$('btnExport').onclick = () => {
+  const blob = new Blob([buildGPX()], { type: 'application/gpx+xml' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = track.name.replace(/[\/:*?"<>|]/g, '_') + '_opraveno.gpx';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+</script>
+</body>
+</html>
