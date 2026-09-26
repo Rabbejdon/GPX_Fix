@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <!--
-  GPX Fixer — oprava GPS stop (skoky, výpadky signálu, aktivita rozdělená na díly).
+  GPX Omni Fix — oprava GPS stop. Kromě hledání jednotlivých skoků, výpadků
+  a spojování dílů umí i překreslit celou trasu a přemapovat na ni časy.
 
   Jeden soubor, otevírá se dvojklikem. GPX se nikam neodesílá, všechno počítá
   prohlížeč u tebe. Z internetu se tahá jen Leaflet a mapové dlaždice.
@@ -15,7 +16,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>GPX Fixer</title>
+<title>GPX Omni Fix</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
@@ -67,7 +68,7 @@ label.opt input{width:66px;padding:3px 5px;border:1px solid var(--line);border-r
 </head>
 <body>
 <header>
-  <h1>GPX Fixer</h1>
+  <h1>GPX Omni Fix</h1>
   <span class="sp"></span>
   <button id="btnLoad">Načíst GPX…</button>
   <button id="btnExport" class="primary" disabled>Stáhnout opravený GPX</button>
@@ -291,9 +292,139 @@ function buildBridge(a, b, via, stepSec) {
   }
   return out;
 }
+
+/* ---------- překreslení celé trasy ----------
+   Myšlenka: geometrie z ručně nakreslené trasy, časy z původních bodů.
+   Každý původní bod se promítne na nakreslenou trasu — tím se boční výkyvy
+   samy srovnají zpět na cestu a zůstane jen skutečný postup vpřed. */
+
+// doplní ke každému bodu kumulativní vzdálenost od startu
+function withDist(pts) {
+  let s = 0;
+  return pts.map((p, i) => {
+    if (i) s += dist(pts[i-1], pts[i]);
+    return { lat: p.lat, lon: p.lon, s };
+  });
+}
+
+// nejbližší místo na trase v okně [fromS, toS]; vrací {s, d}
+function projectOn(path, p, fromS, toS) {
+  let best = { s: fromS, d: Infinity };
+  for (let i = 1; i < path.length; i++) {
+    if (path[i].s < fromS) continue;
+    if (path[i-1].s > toS) break;
+    const A = path[i-1], B = path[i];
+    const P = xy(p, A), Q = xy(B, A);
+    const L2 = Q.x*Q.x + Q.y*Q.y;
+    let t = L2 > 0 ? (P.x*Q.x + P.y*Q.y) / L2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    const d = Math.hypot(P.x - t*Q.x, P.y - t*Q.y);
+    if (d < best.d) best = { s: A.s + t*(B.s - A.s), d };
+  }
+  return best;
+}
+
+// souřadnice na trase ve vzdálenosti s od startu
+function posAt(path, s) {
+  const last = path[path.length-1];
+  if (s <= 0) return path[0];
+  if (s >= last.s) return last;
+  let i = 1;
+  while (i < path.length - 1 && path[i].s < s) i++;
+  const A = path[i-1], B = path[i];
+  const f = (B.s - A.s) > 0 ? (s - A.s) / (B.s - A.s) : 0;
+  return { lat: A.lat + f*(B.lat - A.lat), lon: A.lon + f*(B.lon - A.lon) };
+}
+
+// lineární interpolace hodnoty v čase z kotev (kotvy jsou seřazené podle t)
+function valueAt(anchors, t, key) {
+  if (t <= anchors[0].t) return anchors[0][key];
+  const last = anchors[anchors.length-1];
+  if (t >= last.t) return last[key];
+  let lo = 0, hi = anchors.length - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; (anchors[m].t <= t ? lo = m : hi = m); }
+  const a = anchors[lo], b = anchors[hi];
+  if (a[key] == null || b[key] == null) return a[key] != null ? a[key] : (b[key] != null ? b[key] : null);
+  const f = (b.t - a.t) > 0 ? (t - a.t) / (b.t - a.t) : 0;
+  return a[key] + f * (b[key] - a[key]);
+}
+
+// Jak daleko dopředu se smí bod promítnout. Drží kurzor v pořadí, takže
+// smyčka nebo cesta tam a zpět se nespojí do jednoho místa.
+const MAX_SKOK = 300;
+
+function retrace(orig, drawnLatLon, stepSec, smoothWin) {
+  const path = withDist(drawnLatLon);
+  const total = path[path.length-1].s;
+  if (!(total > 0)) throw new Error('Nakreslená trasa má nulovou délku.');
+
+  // 1) promítni původní body na trasu, kurzor se smí jen posouvat vpřed
+  let cursor = 0;
+  const S = orig.map(p => {
+    const pr = projectOn(path, p, cursor, Math.min(total, cursor + MAX_SKOK));
+    cursor = Math.max(cursor, pr.s);
+    return cursor;
+  });
+
+  // 2) vyhlaď postup. Projekce srovná výkyvy do stran, ale šum PODÉL trasy
+  //    zůstane — a monotónní kurzor ho ještě zafixuje. Bez tohohle kroku
+  //    vycházejí špičky přes 9 m/s tam, kde běžec držel stabilní tempo.
+  if (smoothWin > 1) {
+    const h = (smoothWin - 1) >> 1, sm = S.slice();
+    for (let i = 0; i < S.length; i++) {
+      let sum = 0, n = 0;
+      for (let j = Math.max(0, i - h); j <= Math.min(S.length - 1, i + h); j++) { sum += S[j]; n++; }
+      sm[i] = sum / n;
+    }
+    for (let i = 0; i < S.length; i++) S[i] = sm[i];
+  }
+  // 3) vyhlazení mohlo pořadí porušit — vynuť zpět, že se jde jen vpřed
+  for (let i = 1; i < S.length; i++) if (S[i] < S[i-1]) S[i] = S[i-1];
+  // 4) roztáhni na celou trasu. Tvrdé přepsání krajních hodnot by na posledním
+  //    bodě vyrobilo špičku (naměřeno 7.4 m/s tam, kde zbytek držel pod 4.6),
+  //    proto se škáluje celý průběh.
+  const from = S[0], span = S[S.length-1] - from;
+  if (span > 0) for (let i = 0; i < S.length; i++) S[i] = (S[i] - from) / span * total;
+  else for (let i = 0; i < S.length; i++) S[i] = total * i / (S.length - 1);
+
+  const anchors = orig.map((p, i) => ({ s: S[i], t: p.t, ele: p.ele, x: p.x }));
+
+  // 5) navzorkuj novou trasu po stepSec sekundách
+  const t0 = anchors[0].t, t1 = anchors[anchors.length-1].t;
+  const out = [];
+  for (let t = t0; t < t1; t += stepSec * 1000) {
+    const pos = posAt(path, valueAt(anchors, t, 's'));
+    out.push({ lat: pos.lat, lon: pos.lon, ele: valueAt(anchors, t, 'ele'),
+               t, x: interpExt(anchors, t), gen: true });
+  }
+  const end = orig[orig.length-1];
+  out.push({ lat: path[path.length-1].lat, lon: path[path.length-1].lon,
+             ele: end.ele, t: t1, x: end.x, gen: true });
+  return out;
+}
+
+// tep/kadence v daném čase
+function interpExt(anchors, t) {
+  // kotvy nesou celý objekt x; interpolujeme po klíčích mezi sousedy
+  if (t <= anchors[0].t) return anchors[0].x ? { ...anchors[0].x } : null;
+  const last = anchors[anchors.length-1];
+  if (t >= last.t) return last.x ? { ...last.x } : null;
+  let lo = 0, hi = anchors.length - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; (anchors[m].t <= t ? lo = m : hi = m); }
+  const a = anchors[lo], b = anchors[hi];
+  if (!a.x || !b.x) return a.x ? { ...a.x } : (b.x ? { ...b.x } : null);
+  const f = (b.t - a.t) > 0 ? (t - a.t) / (b.t - a.t) : 0;
+  let out = null;
+  for (const k of EXT_KEYS) {
+    if (a.x[k] == null || b.x[k] == null) continue;
+    (out = out || {})[k] = Math.round(a.x[k] + f * (b.x[k] - a.x[k]));
+  }
+  return out;
+}
+
 /* ---------- stav ---------- */
 let track = null, issues = [], sel = null, ignored = new Set();
-const opt = { vmax: 8, xtMax: 15, gapSec: 20, pauseR: 60, stepSec: 5 };
+const opt = { vmax: 8, xtMax: 15, gapSec: 20, pauseR: 60, stepSec: 5, smooth: 15 };
 
 /* ---------- mapa ---------- */
 const map = L.map('map', { zoomControl: true }).setView([49.75, 18.29], 13);
@@ -389,37 +520,78 @@ function highlight(x) {
 /* ---------- kreslení trasy myší ---------- */
 let draw = null;
 function startDraw(x) {
-  draw = { x, via: [], line: null, dots: L.layerGroup().addTo(map) };
-  document.getElementById('drawbar').classList.add('on');
-  document.getElementById('drawmsg').textContent = 'Klikej po cestě z A do B. Body A a B nepřidávej.';
+  draw = { x, mode: 'gap', via: [], dots: L.layerGroup().addTo(map) };
+  $('drawbar').classList.add('on');
+  $('drawmsg').textContent = 'Klikej po cestě z A do B. Body A a B nepřidávej.';
   map.getContainer().style.cursor = 'crosshair';
   map.on('click', onDrawClick);
+}
+// překreslení celé stopy: klikej od startu do cíle, časy se dopočítají z originálu
+function startRetrace() {
+  if (!track) return;
+  sel = null;
+  gDraw.clearLayers();
+  draw = { mode: 'retrace', via: [], dots: L.layerGroup().addTo(map) };
+  $('drawbar').classList.add('on');
+  $('drawmsg').textContent = 'Klikej celou trasu od startu do cíle.';
+  map.getContainer().style.cursor = 'crosshair';
+  map.on('click', onDrawClick);
+  render();
 }
 function onDrawClick(e) {
   draw.via.push({ lat: e.latlng.lat, lon: e.latlng.lng });
   redrawDraw();
 }
 function redrawDraw() {
-  const [A, B] = anchorsOf(draw.x);
   draw.dots.clearLayers();
-  const pts = [[A.lat, A.lon], ...draw.via.map(p => [p.lat, p.lon]), [B.lat, B.lon]];
-  L.polyline(pts, { color: '#e0433f', weight: 4 }).addTo(draw.dots);
-  draw.via.forEach(p => L.circleMarker([p.lat, p.lon],
-    { radius: 4, color: '#fff', weight: 2, fillColor: '#e0433f', fillOpacity: 1 }).addTo(draw.dots));
-  let d = 0; const all = [A, ...draw.via, B];
+  let all, span;
+  if (draw.mode === 'retrace') {
+    all = draw.via;
+    const pts = track.segs.flat();
+    span = secs(pts[0], pts[pts.length-1]);
+  } else {
+    const [A, B] = anchorsOf(draw.x);
+    all = [A, ...draw.via, B];
+    span = secs(A, B);
+  }
+  if (all.length > 1)
+    L.polyline(all.map(p => [p.lat, p.lon]), { color: '#e0433f', weight: 4 }).addTo(draw.dots);
+  draw.via.forEach((p, i) => L.circleMarker([p.lat, p.lon],
+    { radius: i === 0 && draw.mode === 'retrace' ? 6 : 4, color: '#fff', weight: 2,
+      fillColor: '#e0433f', fillOpacity: 1 }).addTo(draw.dots));
+  let d = 0;
   for (let i = 1; i < all.length; i++) d += dist(all[i-1], all[i]);
-  const span = secs(A, B);
-  document.getElementById('drawmsg').textContent =
-    `${Math.round(d)} m za ${fmtDur(span)} → ${span > 0 ? (d/span).toFixed(2) : '–'} m/s`;
+  if (draw.mode === 'retrace') {
+    const tempo = d > 0 ? (span / 60) / (d / 1000) : 0;
+    $('drawmsg').textContent = draw.via.length < 2
+      ? `Klikej celou trasu od startu do cíle. (${draw.via.length} ${draw.via.length === 1 ? 'bod' : 'body'})`
+      : `${(d/1000).toFixed(2)} km za ${fmtDur(span)} → tempo ${Math.floor(tempo)}:${String(Math.round((tempo%1)*60)).padStart(2,'0')}/km`;
+  } else {
+    $('drawmsg').textContent =
+      `${Math.round(d)} m za ${fmtDur(span)} → ${span > 0 ? (d/span).toFixed(2) : '–'} m/s`;
+  }
 }
 function endDraw(apply) {
   map.off('click', onDrawClick);
   map.getContainer().style.cursor = '';
-  document.getElementById('drawbar').classList.remove('on');
-  if (draw) { draw.dots.remove(); }
+  $('drawbar').classList.remove('on');
+  if (draw) draw.dots.remove();
   const d = draw; draw = null;
-  if (apply && d) applyFix(d.x, d.via);
-  else render();
+  if (!apply || !d) { render(); return; }
+  if (d.mode === 'retrace') applyRetrace(d.via);
+  else applyFix(d.x, d.via);
+}
+function applyRetrace(via) {
+  if (via.length < 2) { alert('Trasa potřebuje aspoň dva body.'); render(); return; }
+  try {
+    const orig = track.segs.flat().sort((a, b) => a.t - b.t);
+    track.segs = [retrace(orig, via, opt.stepSec, opt.smooth)];
+    ignored.clear(); sel = null;
+    render();
+  } catch (e) {
+    alert('Překreslení se nepovedlo: ' + e.message);
+    render();
+  }
 }
 
 /* ---------- aplikace opravy ---------- */
@@ -550,6 +722,13 @@ function render() {
     }
   });
 
+  h += `<h2>Celá trasa</h2>
+    <p class="hint">Když stopa kmitá po celé délce (tempo skáče, i když jsi běžel
+      stejně), vyplatí se místo lovení jednotlivých skoků obtáhnout trasu znovu.
+      Časy se převezmou z původních bodů — jejich promítnutím na novou trasu.</p>
+    <label class="opt">Vyhlazení <input id="o_s" type="number" step="2" min="1" value="${opt.smooth}"> bodů</label>
+    <button class="sm" id="btnRetrace" style="margin-top:6px">Překreslit celou trasu</button>`;
+
   h += `<h2>Citlivost</h2>
     <label class="opt">Max. rychlost <input id="o_v" type="number" step="0.5" value="${opt.vmax}"> m/s</label>
     <label class="opt">Odchylka od trasy <input id="o_x" type="number" step="1" value="${opt.xtMax}"> m</label>
@@ -572,13 +751,17 @@ function render() {
       else if (act === 'split') splitAsPause(x);
     });
   });
-  ['v:vmax','x:xtMax','g:gapSec','p:pauseR'].forEach(pair => {
+  ['v:vmax','x:xtMax','g:gapSec','p:pauseR','s:smooth'].forEach(pair => {
     const [k, name] = pair.split(':');
-    $('o_' + k).addEventListener('change', e => {
+    const el = $('o_' + k);
+    if (!el) return;
+    el.addEventListener('change', e => {
       const v = parseFloat(e.target.value);
       if (isFinite(v) && v > 0) { opt[name] = v; ignored.clear(); render(); }
     });
   });
+  const bR = $('btnRetrace');
+  if (bR) bR.onclick = startRetrace;
   $('btnExport').disabled = false;
   if (sel) { const x = issues.find(i => i.key === sel); if (x) highlight(x); else gDraw.clearLayers(); }
 }
