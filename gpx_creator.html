@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<!--
+  GPX Creator — vyrobí GPX stopu z trasy naklikané do mapy.
+
+  K čemu: zrekonstruovat aktivitu, která se nenahrála, nebo na kterou jsi
+  zapomněl zapnout hodinky. Naklikáš trasu, zadáš začátek a dobu, dostaneš soubor.
+
+  Tempo vychází rovnoměrné po celé délce — je to rekonstrukce, ne záznam,
+  a výsledek tak i vypadá.
+
+  Jeden soubor, otevírá se dvojklikem. Nic se nikam neodesílá.
+  Mapy: OpenTopoMap (CC-BY-SA, data © OpenStreetMap přispěvatelé, SRTM) a Esri.
+  Knihovna Leaflet (BSD-2-Clause) se načítá z unpkg.com.
+-->
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPX Creator</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+:root{
+  --bg:#f6f7f9; --panel:#fff; --ink:#1c1f23; --muted:#6b7280; --line:#e3e6ea;
+  --accent:#2f6fed; --bad:#e0433f; --warn:#d98314; --ok:#1f9d55;
+}
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;color:var(--ink);background:var(--bg);height:100vh;display:flex;flex-direction:column;overflow:hidden}
+header{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);flex:none}
+header h1{font-size:15px;margin:0;font-weight:650;letter-spacing:-.01em}
+header .sp{flex:1}
+button{font:inherit;border:1px solid var(--line);background:#fff;color:var(--ink);padding:6px 12px;border-radius:7px;cursor:pointer}
+button:hover:not(:disabled){background:#f0f2f5}
+button:disabled{opacity:.45;cursor:default}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.primary:hover:not(:disabled){background:#2560d8}
+button.sm{padding:4px 9px;font-size:12.5px}
+main{flex:1;display:flex;min-height:0}
+#side{width:330px;flex:none;background:var(--panel);border-right:1px solid var(--line);overflow-y:auto;padding:14px}
+#map{flex:1;background:#dfe3e8;cursor:crosshair}
+h2{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:18px 0 8px;font-weight:650}
+h2:first-child{margin-top:0}
+.f{margin-bottom:9px}
+.f label{display:block;font-size:12px;color:var(--muted);margin-bottom:3px}
+.f input,.f select{width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:6px;font:inherit;background:#fff;color:var(--ink)}
+.f input:focus,.f select:focus{outline:2px solid #2f6fed33;border-color:var(--accent)}
+.row{display:flex;gap:8px}
+.row .f{flex:1;min-width:0}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:10px}
+.stats div{background:var(--panel);padding:8px 10px}
+.stats span{display:block;font-size:11px;color:var(--muted)}
+.stats b{font-size:15px;font-weight:650}
+.hint{font-size:12px;color:var(--muted);margin:8px 0 0}
+.warn{color:var(--warn)}
+.wrap{position:relative;flex:1;display:flex}
+#bar{position:absolute;z-index:1000;top:12px;left:50%;transform:translateX(-50%);background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:8px 12px;display:flex;gap:10px;align-items:center;box-shadow:0 3px 14px #0002;font-size:12.5px}
+#bar b{font-weight:650}
+</style>
+</head>
+<body>
+<header>
+  <h1>GPX Creator</h1>
+  <span class="sp"></span>
+  <button id="btnUndo" disabled>Zpět</button>
+  <button id="btnClear" disabled>Vymazat trasu</button>
+  <button id="btnSave" class="primary" disabled>Stáhnout GPX</button>
+</header>
+<main>
+  <div id="side">
+    <h2>Aktivita</h2>
+    <div class="f"><label for="f_name">Název</label>
+      <input id="f_name" type="text" value="Běh" maxlength="120"></div>
+    <div class="f"><label for="f_type">Typ</label>
+      <select id="f_type">
+        <option value="running">Běh</option>
+        <option value="hiking">Turistika</option>
+        <option value="walking">Chůze</option>
+        <option value="cycling">Kolo</option>
+      </select></div>
+    <div class="row">
+      <div class="f"><label for="f_date">Datum</label><input id="f_date" type="date"></div>
+      <div class="f"><label for="f_start">Start</label><input id="f_start" type="time" step="1"></div>
+    </div>
+
+    <h2>Čas a tempo</h2>
+    <div class="row">
+      <div class="f"><label for="f_dur">Doba (h:mm:ss)</label><input id="f_dur" type="text" value="0:30:00"></div>
+      <div class="f"><label for="f_pace">Tempo (min/km)</label><input id="f_pace" type="text" placeholder="6:00"></div>
+    </div>
+    <p class="hint">Vyplň jedno, druhé se dopočítá z délky trasy.</p>
+
+    <h2>Trasa</h2>
+    <div class="stats">
+      <div><span>Délka</span><b id="s_len">0,00 km</b></div>
+      <div><span>Bodů</span><b id="s_pts">0</b></div>
+    </div>
+    <p class="hint" id="s_note">Klikej do mapy. První klik je start, poslední cíl.</p>
+
+    <h2>Detaily</h2>
+    <div class="row">
+      <div class="f"><label for="f_step">Bod po (s)</label><input id="f_step" type="number" value="5" min="1" max="60"></div>
+      <div class="f"><label for="f_hr">Tep (volitelné)</label><input id="f_hr" type="number" placeholder="–" min="30" max="230"></div>
+    </div>
+    <p class="hint">Výška se nevyplňuje — Strava si ji dopočítá z vlastního modelu
+      přesněji, než bychom ji tu odhadli.</p>
+  </div>
+  <div class="wrap">
+    <div id="map"></div>
+    <div id="bar"><span id="barmsg">Klikej do mapy a nakresli trasu</span></div>
+  </div>
+</main>
+<script>
+/* ---------- geometrie ---------- */
+const R = 6371000;
+const rad = d => d * Math.PI / 180;
+function dist(a, b) {
+  const dla = rad(b.lat - a.lat), dlo = rad(b.lon - a.lon);
+  const h = Math.sin(dla/2)**2 + Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(dlo/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+// kumulativní vzdálenost podél lomené čáry
+function withDist(pts) {
+  let s = 0;
+  return pts.map((p, i) => {
+    if (i) s += dist(pts[i-1], pts[i]);
+    return { lat: p.lat, lon: p.lon, s };
+  });
+}
+// souřadnice ve vzdálenosti s od startu
+function posAt(path, s) {
+  const last = path[path.length-1];
+  if (s <= 0) return path[0];
+  if (s >= last.s) return last;
+  let i = 1;
+  while (i < path.length - 1 && path[i].s < s) i++;
+  const A = path[i-1], B = path[i];
+  const f = (B.s - A.s) > 0 ? (s - A.s) / (B.s - A.s) : 0;
+  return { lat: A.lat + f*(B.lat - A.lat), lon: A.lon + f*(B.lon - A.lon) };
+}
+
+/* ---------- čas ---------- */
+// "1:23:45" | "23:45" | "90" -> sekundy
+function parseDur(s) {
+  s = String(s).trim();
+  if (!s) return null;
+  const p = s.split(':').map(x => parseFloat(x));
+  if (p.some(x => !isFinite(x) || x < 0)) return null;
+  if (p.length === 1) return p[0] * 60;             // holé číslo = minuty
+  if (p.length === 2) return p[0]*60 + p[1];
+  if (p.length === 3) return p[0]*3600 + p[1]*60 + p[2];
+  return null;
+}
+function fmtDur(sec) {
+  sec = Math.max(0, Math.round(sec));
+  const h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60), s = sec%60;
+  return h ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
+           : `${m}:${String(s).padStart(2,'0')}`;
+}
+const fmtPace = secPerKm => {
+  if (!isFinite(secPerKm) || secPerKm <= 0) return '–';
+  const m = Math.floor(secPerKm/60), s = Math.round(secPerKm%60);
+  return s === 60 ? `${m+1}:00` : `${m}:${String(s).padStart(2,'0')}`;
+};
+const isoZ = ms => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+/* ---------- mapa ---------- */
+const map = L.map('map', { zoomControl: true }).setView([49.75, 18.29], 13);
+// Dlaždice přímo z openstreetmap.org tu být nemohou — odmítají requesty bez
+// Refereru, což je případ stránky otevřené z file://.
+const layers = {
+  'Turistická': L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+    { maxZoom: 17, subdomains: 'abc',
+      attribution: '© OpenStreetMap přispěvatelé, SRTM | © <a href="https://opentopomap.org/" target="_blank" rel="noopener">OpenTopoMap</a> (CC-BY-SA)' }),
+  'Mapa': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+    { maxZoom: 19, attribution: 'Podklady © Esri' }),
+  'Satelit': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    { maxZoom: 19, attribution: 'Podklady © Esri' })
+};
+layers['Turistická'].addTo(map);
+L.control.layers(layers, null, { position: 'topright' }).addTo(map);
+
+const gLine = L.layerGroup().addTo(map);
+const $ = id => document.getElementById(id);
+
+/* ---------- kreslení ---------- */
+let via = [];
+
+map.on('click', e => {
+  via.push({ lat: e.latlng.lat, lon: e.latlng.lng });
+  redraw();
+});
+
+function redraw() {
+  gLine.clearLayers();
+  if (via.length > 1)
+    L.polyline(via.map(p => [p.lat, p.lon]), { color: '#2f6fed', weight: 4, opacity: .9 }).addTo(gLine);
+  via.forEach((p, i) => {
+    const first = i === 0, last = i === via.length - 1 && via.length > 1;
+    L.circleMarker([p.lat, p.lon], {
+      radius: first || last ? 7 : 4,
+      color: '#fff', weight: 2,
+      fillColor: first ? '#1f9d55' : (last ? '#e0433f' : '#2f6fed'),
+      fillOpacity: 1
+    }).addTo(gLine).bindTooltip(first ? 'Start' : (last ? 'Cíl' : `Bod ${i+1}`));
+  });
+  update();
+}
+
+function routeLen() {
+  let d = 0;
+  for (let i = 1; i < via.length; i++) d += dist(via[i-1], via[i]);
+  return d;
+}
+
+/* ---------- doba <-> tempo ----------
+   Uživatel vyplní jedno, druhé dopočítáme z délky trasy. Poslední ručně
+   změněné pole je to "vedoucí" — jinak by si ty dvě hodnoty přepisovaly. */
+let leading = 'dur';
+
+function currentDur() {
+  const km = routeLen() / 1000;
+  if (leading === 'pace') {
+    const p = parseDur($('f_pace').value);
+    return (p && km > 0) ? p * km : null;
+  }
+  return parseDur($('f_dur').value);
+}
+
+function update() {
+  const km = routeLen() / 1000;
+  $('s_len').textContent = km.toFixed(2).replace('.', ',') + ' km';
+  $('s_pts').textContent = via.length;
+
+  const dur = currentDur();
+  // dopočítej to druhé pole
+  if (km > 0 && dur) {
+    if (leading === 'dur') $('f_pace').value = fmtPace(dur / km);
+    else $('f_dur').value = fmtDur(dur);
+  }
+
+  const ready = via.length >= 2 && dur > 0 && km > 0;
+  $('btnSave').disabled = !ready;
+  $('btnClear').disabled = via.length === 0;
+  $('btnUndo').disabled = via.length === 0;
+
+  let msg;
+  if (via.length === 0) msg = 'Klikej do mapy a nakresli trasu';
+  else if (via.length === 1) msg = 'Start umístěn — klikej dál po trase';
+  else if (!dur) msg = 'Doplň dobu nebo tempo';
+  else msg = `<b>${km.toFixed(2).replace('.', ',')} km</b> za <b>${fmtDur(dur)}</b> → tempo <b>${fmtPace(dur/km)}/km</b>`;
+  $('barmsg').innerHTML = msg;
+
+  // varuj u nesmyslného tempa
+  const note = $('s_note');
+  if (ready) {
+    const ms = (km * 1000) / dur;
+    const typ = $('f_type').value;
+    const limit = typ === 'cycling' ? 25 : (typ === 'running' ? 8 : 4);
+    note.textContent = ms > limit
+      ? `Vychází ${ms.toFixed(1)} m/s — na zvolený typ aktivity hodně. Zkontroluj dobu.`
+      : 'První bod je start, poslední cíl.';
+    note.className = ms > limit ? 'hint warn' : 'hint';
+  } else {
+    note.textContent = 'Klikej do mapy. První klik je start, poslední cíl.';
+    note.className = 'hint';
+  }
+}
+
+/* ---------- generování bodů ---------- */
+function build() {
+  const path = withDist(via);
+  const total = path[path.length-1].s;
+  const dur = currentDur();
+  const step = Math.max(1, Math.min(60, parseInt($('f_step').value, 10) || 5));
+  const hr = parseInt($('f_hr').value, 10);
+
+  const t0 = Date.parse(`${$('f_date').value}T${$('f_start').value}`);
+  if (!isFinite(t0)) throw new Error('Zkontroluj datum a čas startu.');
+
+  const n = Math.max(1, Math.round(dur / step));
+  const out = [];
+  for (let i = 0; i <= n; i++) {
+    const f = i / n;
+    const p = posAt(path, total * f);
+    out.push({ lat: p.lat, lon: p.lon, t: t0 + Math.round(f * dur * 1000),
+               hr: isFinite(hr) ? hr : null });
+  }
+  return out;
+}
+
+const esc = s => String(s).replace(/[<>&'"]/g, c => ({ '<':'&lt;','>':'&gt;','&':'&amp;',"'":'&apos;','"':'&quot;' }[c]));
+
+function buildGPX(pts) {
+  let o = '<?xml version="1.0" encoding="UTF-8"?>\n';
+  o += '<gpx creator="GPX Creator" version="1.1" xmlns="http://www.topografix.com/GPX/1/1"';
+  o += ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"';
+  o += ' xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1"';
+  o += ' xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">\n';
+  o += ` <metadata>\n  <time>${isoZ(pts[0].t)}</time>\n </metadata>\n`;
+  o += ` <trk>\n  <name>${esc($('f_name').value.trim() || 'Aktivita')}</name>\n`;
+  o += `  <type>${esc($('f_type').value)}</type>\n  <trkseg>\n`;
+  pts.forEach(p => {
+    o += `   <trkpt lat="${p.lat.toFixed(7)}" lon="${p.lon.toFixed(7)}">\n`;
+    o += `    <time>${isoZ(p.t)}</time>\n`;
+    if (p.hr != null) {
+      o += '    <extensions>\n     <gpxtpx:TrackPointExtension>\n';
+      o += `      <gpxtpx:hr>${p.hr}</gpxtpx:hr>\n`;
+      o += '     </gpxtpx:TrackPointExtension>\n    </extensions>\n';
+    }
+    o += '   </trkpt>\n';
+  });
+  return o + '  </trkseg>\n </trk>\n</gpx>\n';
+}
+
+/* ---------- obsluha ---------- */
+$('btnUndo').onclick = () => { via.pop(); redraw(); };
+$('btnClear').onclick = () => { via = []; redraw(); };
+$('btnSave').onclick = () => {
+  try {
+    const gpx = buildGPX(build());
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([gpx], { type: 'application/gpx+xml' }));
+    a.download = ($('f_name').value.trim() || 'aktivita').replace(/[\/:*?"<>|]/g, '_') + '.gpx';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  } catch (e) {
+    alert('Nepovedlo se vytvořit soubor: ' + e.message);
+  }
+};
+$('f_dur').addEventListener('input', () => { leading = 'dur'; update(); });
+$('f_pace').addEventListener('input', () => { leading = 'pace'; update(); });
+['f_type','f_step','f_hr','f_date','f_start'].forEach(id => $(id).addEventListener('input', update));
+document.addEventListener('keydown', e => {
+  if (e.key === 'Backspace' && e.target === document.body && via.length) { e.preventDefault(); via.pop(); redraw(); }
+});
+
+// výchozí datum a čas: dnes, zaokrouhleno dolů na celou hodinu
+(() => {
+  const d = new Date();
+  $('f_date').value = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  $('f_start').value = `${String(d.getHours()).padStart(2,'0')}:00:00`;
+  update();
+})();
+</script>
+</body>
+</html>

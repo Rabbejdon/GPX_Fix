@@ -16,7 +16,7 @@ podle toho, kudy jsi skutečně šel.
 stopy. Když jsi mezitím jen stál (fotil na vrcholu), rozpozná to a nechá tam pauzu.
 
 
-## Dvě verze
+## Tři nástroje
 
 **`index.html` — GPX Fixer.** Najde jednotlivé problémy a nabídne opravu. Na skok,
 výpadek nebo spadlou aplikaci to stačí.
@@ -41,13 +41,23 @@ Na reálném pětikilometru to znamenalo tohle:
 Medián se skoro nehne — vyhlazení tedy tempo nekřiví, jen ořezává nesmysly.
 **Vzdálenost po překreslení odpovídá tomu, co nakreslíš**, takže klikej podle mapy pozorně.
 
-## Jak to použít
+**`gpx_creator.html` — GPX Creator.** Nic neopravuje, vyrábí stopu od nuly. Naklikáš
+trasu do mapy, zadáš datum, čas startu a dobu (nebo tempo — druhé se dopočítá) a stáhneš
+hotový GPX. Na zrekonstruování aktivity, která se nenahrála nebo na kterou jsi zapomněl
+zapnout hodinky.
 
-1. Stáhni `index.html` nebo `omni_fix.html` (můžeš si je přejmenovat, jak chceš)
+Tempo vychází rovnoměrné po celé délce a výška se nevyplňuje (Strava si ji dopočítá
+z vlastního modelu přesněji). Je to rekonstrukce, ne záznam, a výsledek tak i vypadá.
+
+## Jak opravit stopu (GPX Fixer / Omni Fix)
+
+1. Stáhni si ten, který potřebuješ (můžeš si ho přejmenovat, jak chceš)
 2. Otevři dvojklikem
 3. Přetáhni do něj GPX — víc dílů naráz se spojí
 4. Projdi nalezené problémy, u každého vyber co s ním
 5. **Stáhnout opravený GPX**
+
+U GPX Creatoru je postup jiný: naklikáš trasu, vyplníš čas a dobu, stáhneš.
 
 Na Stravě pak nahraj opravený soubor a smaž tu původní aktivitu.
 
