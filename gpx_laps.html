@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<!-- GPX Laps — rozdělení zaznamenané trasy na kola a export TCX. Data zůstávají v prohlížeči. -->
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPX Laps</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+
+:root{
+  --bg:#f6f7f9; --panel:#fff; --ink:#1c1f23; --muted:#6b7280; --line:#e3e6ea;
+  --accent:#2f6fed; --bad:#e0433f; --warn:#d98314; --ok:#1f9d55;
+}
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;color:var(--ink);background:var(--bg);height:100vh;display:flex;flex-direction:column;overflow:hidden}
+header{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);flex:none}
+header h1{font-size:15px;margin:0;font-weight:650;letter-spacing:-.01em}
+header .sp{flex:1}
+button{font:inherit;border:1px solid var(--line);background:#fff;color:var(--ink);padding:6px 12px;border-radius:7px;cursor:pointer}
+button:hover:not(:disabled){background:#f0f2f5}
+button:disabled{opacity:.45;cursor:default}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.primary:hover:not(:disabled){background:#2560d8}
+button.sm{padding:4px 9px;font-size:12.5px}
+main{flex:1;display:flex;min-height:0}
+#side{width:330px;flex:none;background:var(--panel);border-right:1px solid var(--line);overflow-y:auto;padding:14px}
+#map{flex:1;background:#dfe3e8;cursor:crosshair}
+h2{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:18px 0 8px;font-weight:650}
+h2:first-child{margin-top:0}
+.f{margin-bottom:9px}
+.f label{display:block;font-size:12px;color:var(--muted);margin-bottom:3px}
+.f input,.f select{width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:6px;font:inherit;background:#fff;color:var(--ink)}
+.f input:focus,.f select:focus{outline:2px solid #2f6fed33;border-color:var(--accent)}
+.row{display:flex;gap:8px}
+.row .f{flex:1;min-width:0}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:10px}
+.stats div{background:var(--panel);padding:8px 10px}
+.stats span{display:block;font-size:11px;color:var(--muted)}
+.stats b{font-size:15px;font-weight:650}
+.hint{font-size:12px;color:var(--muted);margin:8px 0 0}
+.warn{color:var(--warn)}
+.wrap{position:relative;flex:1;display:flex}
+#bar{position:absolute;z-index:1000;top:12px;left:50%;transform:translateX(-50%);background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:8px 12px;display:flex;gap:10px;align-items:center;box-shadow:0 3px 14px #0002;font-size:12.5px}
+#bar b{font-weight:650}
+
+#side{width:370px} .wrap{min-width:0} [hidden]{display:none!important}
+.drop{border:2px dashed var(--line);border-radius:10px;padding:18px;text-align:center;color:var(--muted);cursor:pointer}
+.drop.over,.drop:hover{border-color:var(--accent);background:#f4f7ff}
+#message{color:var(--bad)} table{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}
+th,td{text-align:right;padding:6px 3px;border-bottom:1px solid var(--line)} th{color:var(--muted)}
+tr.selected{background:#eaf0ff} tbody tr{cursor:pointer} tbody tr:hover{background:#f0f2f5}
+#trackName{overflow-wrap:anywhere} #bar{max-width:80%;pointer-events:none}
+</style>
+</head>
+<body>
+<header><h1>GPX Laps</h1><span class="sp"></span><button id="btnLoad">Načíst GPX…</button><button id="btnSave" class="primary" disabled>Stáhnout TCX</button></header>
+<main>
+<div id="side">
+  <div id="drop" class="drop" role="button" tabindex="0">Přetáhni GPX kamkoliv do okna<br>nebo klikni pro výběr souboru</div>
+  <input id="file" type="file" accept=".gpx,application/gpx+xml" hidden>
+  <p id="message" class="hint" role="alert"></p>
+  <h2>Trasa</h2><b id="trackName">Žádný soubor</b>
+  <div class="stats"><div><span>Vzdálenost</span><b id="length">–</b></div><div><span>Celkový čas</span><b id="duration">–</b></div></div>
+  <h2>Rozdělení na kola</h2>
+  <div class="f"><label for="mode">Způsob rozdělení</label><select id="mode"><option value="distance">Po vzdálenosti</option><option value="time">Po čase</option><option value="interval">Intervaly</option><option value="manual">Ručně</option></select></div>
+  <div id="distanceFields" class="f"><label for="metres">Délka kola (m)</label><input id="metres" type="number" min="1" step="1" value="1000"></div>
+  <div id="timeFields" class="f" hidden><label for="seconds">Doba kola (s)</label><input id="seconds" type="number" min="1" step="1" value="300"></div>
+  <div id="intervalFields" hidden>
+    <div class="row"><div class="f"><label for="fast">Rychle (m)</label><input id="fast" type="number" min="1" step="1" value="400"></div><div class="f"><label for="recovery">Odpočinek (m)</label><input id="recovery" type="number" min="1" step="1" value="200"></div></div>
+    <div class="f"><label for="repeats">Počet opakování</label><input id="repeats" type="number" min="1" max="5000" step="1" value="8"></div>
+  </div>
+  <button id="btnApply" class="sm" disabled>Vytvořit hranice znovu</button>
+  <button id="btnClear" class="sm" disabled>Smazat všechny hranice</button>
+  <p class="hint">V každém režimu můžeš kliknutím na čáru přidat hranici a kliknutím na její značku ji odstranit. Ruční režim zachová současné hranice. Ostatní režimy vytvoří nové.</p>
+  <p class="hint">Časy jsou celkové včetně zastávek. Hranice mezi body se dopočítají. Mezery mezi GPX segmenty se nezapočítávají do vzdálenosti.</p>
+  <h2 id="lapHeading">Kola (0)</h2>
+  <table><thead><tr><th>Kolo</th><th>m</th><th>Čas</th><th>min/km</th><th>Tep</th></tr></thead><tbody id="laps"></tbody></table>
+  <p class="hint">Klikni na řádek pro zvýraznění kola. Tep je průměr dostupných vzorků. Intervaly střídají rychlý úsek a odpočinek; zbytek tvoří poslední kolo.</p>
+</div>
+<div class="wrap"><div id="map"></div><div id="bar"><span id="barmsg">Načti GPX s časovými značkami</span></div></div>
+</main>
+<script>
+const EXT_KEYS = ['hr'];
+function parseGPX(text, fname) {
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  if (doc.querySelector('parsererror')) throw new Error(fname + ': neplatné XML');
+  const trk = doc.querySelector('trk');
+  const segs = [];
+  doc.querySelectorAll('trkseg').forEach(sg => {
+    const pts = [];
+    sg.querySelectorAll('trkpt').forEach(tp => {
+      const lat = parseFloat(tp.getAttribute('lat')), lon = parseFloat(tp.getAttribute('lon'));
+      if (!isFinite(lat) || !isFinite(lon)) return;
+      const e = tp.querySelector('ele'), t = tp.querySelector('time');
+      // rozšíření (tep, kadence, teplota, výkon) — prefix ignorujeme, jdeme po localName
+      let x = null;
+      const xe = tp.getElementsByTagName('extensions')[0];
+      if (xe) {
+        for (const el of xe.getElementsByTagName('*')) {
+          const k = (el.localName || '').toLowerCase();
+          if (!EXT_KEYS.includes(k)) continue;
+          const v = parseFloat(el.textContent);
+          if (isFinite(v)) (x = x || {})[k] = v;
+        }
+      }
+      pts.push({
+        lat, lon,
+        ele: e ? parseFloat(e.textContent) : null,
+        t: t ? Date.parse(t.textContent) : null,
+        x
+      });
+    });
+    if (pts.length) segs.push(pts);
+  });
+  if (!segs.length) throw new Error(fname + ': žádné body trasy');
+  if (segs.some(s => s.some(p => p.t === null || isNaN(p.t))))
+    throw new Error(fname + ': body nemají časové značky, nelze analyzovat');
+  const ext = doc.querySelectorAll('trkpt extensions').length;
+  return {
+    ext,
+    name: trk?.querySelector('name')?.textContent?.trim() || fname.replace(/\.gpx$/i, ''),
+    type: trk?.querySelector('type')?.textContent?.trim() || '',
+    segs
+  };
+}
+
+
+const R = 6371000;
+const rad = d => d * Math.PI / 180;
+
+function dist(a, b) {
+  const dla = rad(b.lat - a.lat), dlo = rad(b.lon - a.lon);
+  const h = Math.sin(dla/2)**2 + Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(dlo/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+function withDist(pts) {
+  let s = 0;
+  return pts.map((p, i) => {
+    if (i) s += dist(pts[i-1], pts[i]);
+    return { lat: p.lat, lon: p.lon, s };
+  });
+}
+
+
+const map = L.map('map', { zoomControl: true }).setView([49.75, 18.29], 13);
+// Dlaždice přímo z openstreetmap.org tu být nemohou — odmítají requesty bez
+// Refereru, což je případ stránky otevřené z file://.
+const layers = {
+  'Turistická': L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+    { maxZoom: 17, subdomains: 'abc',
+      attribution: '© OpenStreetMap přispěvatelé, SRTM | © <a href="https://opentopomap.org/" target="_blank" rel="noopener">OpenTopoMap</a> (CC-BY-SA)' }),
+  'Mapa': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+    { maxZoom: 19, attribution: 'Podklady © Esri' }),
+  'Satelit': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    { maxZoom: 19, attribution: 'Podklady © Esri' })
+};
+layers['Turistická'].addTo(map);
+L.control.layers(layers, null, { position: 'topright' }).addTo(map);
+const $ = id => document.getElementById(id);
+const gLines = L.layerGroup().addTo(map), gMarks = L.layerGroup().addTo(map);
+let track = null, points = [], boundaries = [], laps = [], selected = -1, edited = false;
+const fmtDur = seconds => {
+  const n = Math.max(0, Math.round(seconds)), h = Math.floor(n / 3600);
+  const m = Math.floor(n / 60) % 60, s = String(n % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${Math.floor(n / 60)}:${s}`;
+};
+const isoZ = t => new Date(t).toISOString();
+
+// Hranice je poloha v pořadí bodů; desetinná část určuje interpolaci.
+function pointAt(q) {
+  const i = Math.floor(q), a = points[i], b = points[Math.min(i + 1, points.length - 1)], f = q - i;
+  if (!f) return a;
+  const p = {segment:a.segment};
+  for (const k of ['lat','lon','s','t']) p[k] = a[k] + f * (b[k] - a[k]);
+  p.ele = a.ele != null && b.ele != null ? a.ele + f * (b.ele - a.ele) : null;
+  p.x = a.x?.hr != null && b.x?.hr != null ? {hr: Math.round(a.x.hr + f * (b.x.hr - a.x.hr))} : null;
+  return p;
+}
+function boundaryAt(value, key) {
+  let lo = 0, hi = points.length - 1;
+  while (hi - lo > 1) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (points[mid][key] < value) lo = mid; else hi = mid;
+  }
+  const span = points[hi][key] - points[lo][key];
+  // U mezery mezi segmenty použij skutečný bod, nevytvářej umělou spojnici.
+  if (points[lo].segment !== points[hi].segment) return hi;
+  return span > 0 ? lo + (value - points[lo][key]) / span : hi;
+}
+function normalize() {
+  const end = points.length - 1, last = points[end];
+  let prev = points[0];
+  boundaries = [...new Set(boundaries)].sort((a,b) => a-b).filter(q => {
+    if (!(q > 0 && q < end)) return false;
+    const p = pointAt(q);
+    if (p.s - prev.s < 0.001 || p.t - prev.t < 1 || last.s - p.s < 0.001 || last.t - p.t < 1) return false;
+    prev = p; return true;
+  });
+}
+function positive(id) {
+  const el = $(id), n = Number(el.value);
+  if (!el.checkValidity() || !Number.isFinite(n) || n <= 0) throw new Error('Zadej kladná celá čísla do polí rozdělení.');
+  return n;
+}
+function applyMode() {
+  if (!track) return;
+  try {
+    const mode = $('mode').value, next = [], end = points.at(-1);
+    if (mode === 'manual') { render(); return; }
+    const add = (value, key) => {
+      if (next.length >= 10000) throw new Error('Příliš mnoho kol. Zvol větší délku nebo dobu kola (nejvýše 10 000 hranic).');
+      next.push(boundaryAt(value, key));
+    };
+    if (mode === 'distance' || mode === 'time') {
+      const key = mode === 'distance' ? 's' : 't';
+      const step = mode === 'distance' ? positive('metres') : positive('seconds') * 1000;
+      const start = points[0][key];
+      for (let n = 1; start + n * step < end[key]; n++) add(start + n * step, key);
+    } else {
+      const a = positive('fast'), b = positive('recovery'), count = positive('repeats');
+      let s = 0;
+      for (let n = 0; n < count; n++) {
+        s += a; if (s >= end.s) break; add(s, 's');
+        s += b; if (s >= end.s) break; add(s, 's');
+      }
+    }
+    boundaries = next; edited = false; $('message').textContent = ''; render();
+  } catch (e) { $('message').textContent = e.message; }
+}
+function selectLap(i) { selected = i; render(); map.fitBounds(L.latLngBounds(laps[i].pts.map(p => [p.lat,p.lon])).pad(.1), {maxZoom:17}); }
+function addBoundary(e) {
+  // Nejbližší úsečka v souřadnicích obrazovky; daleké kliknutí ignoruj.
+  const click = map.latLngToLayerPoint(e.latlng);
+  let best = 144, q = null;
+  for (let i = 1; i < points.length; i++) {
+    if (points[i-1].segment !== points[i].segment) continue;
+    const a = map.latLngToLayerPoint([points[i-1].lat,points[i-1].lon]);
+    const b = map.latLngToLayerPoint([points[i].lat,points[i].lon]);
+    const dx = b.x-a.x, dy = b.y-a.y, size = dx*dx+dy*dy;
+    const f = size ? Math.max(0,Math.min(1,((click.x-a.x)*dx+(click.y-a.y)*dy)/size)) : 0;
+    const d = (click.x-a.x-f*dx)**2+(click.y-a.y-f*dy)**2;
+    if (d < best) { best = d; q = i-1+f; }
+  }
+  if (q != null) { boundaries.push(q); edited = true; render(); }
+}
+function render() {
+  gLines.clearLayers(); gMarks.clearLayers(); $('laps').replaceChildren();
+  if (!track) return;
+  normalize(); selected = selected < boundaries.length + 1 ? selected : -1;
+  const cuts = [0,...boundaries,points.length-1]; laps = [];
+  for (let i = 1; i < cuts.length; i++) {
+    const a = cuts[i-1], b = cuts[i];
+    const pts = [pointAt(a)];
+    for (let j = Math.floor(a)+1; j < b; j++) pts.push(points[j]);
+    pts.push(pointAt(b));
+    const first = pts[0], last = pts.at(-1), distance = last.s-first.s, seconds = (last.t-first.t)/1000;
+    const hrs = pts.filter(p => p.x?.hr != null).map(p => p.x.hr);
+    const hr = hrs.length ? Math.round(hrs.reduce((s,v) => s+v,0)/hrs.length) : null;
+    laps.push({pts,distance,seconds,hr});
+    // Oddělené segmenty zůstávají oddělené i na mapě a v TCX.
+    const chunks = [];
+    pts.forEach(p => {
+      if (!chunks.length || chunks.at(-1).at(-1).segment !== p.segment) chunks.push([]);
+      chunks.at(-1).push(p);
+    });
+    chunks.forEach(chunk => L.polyline(chunk.map(p => [p.lat,p.lon]), {
+      color:selected === i-1 ? '#e0433f' : (i % 2 ? '#2f6fed' : '#d98314'),
+      weight:selected === i-1 ? 7 : 4, opacity:.9, bubblingMouseEvents:false
+    }).addTo(gLines).on('click', addBoundary));
+    const row = document.createElement('tr'); row.className = selected === i-1 ? 'selected' : '';
+    row.tabIndex = 0; row.setAttribute('aria-label', `Kolo ${i}, zobrazit na mapě`);
+    for (const value of [i,Math.round(distance),fmtDur(seconds),fmtDur(seconds*1000/distance),hr ?? '–']) {
+      const cell = document.createElement('td'); cell.textContent = value; row.appendChild(cell);
+    }
+    row.onclick = () => selectLap(i-1);
+    row.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectLap(i-1); } };
+    $('laps').appendChild(row);
+  }
+  boundaries.forEach(q => {
+    const p = pointAt(q);
+    L.circleMarker([p.lat,p.lon], {radius:5,color:'#fff',weight:2,fillColor:'#1c1f23',fillOpacity:1,bubblingMouseEvents:false})
+      .addTo(gMarks).bindTooltip('Kliknutím odstranit hranici').on('click', () => { boundaries = boundaries.filter(v => v !== q); edited = true; render(); });
+  });
+  $('lapHeading').textContent = `Kola (${laps.length})`;
+  $('barmsg').textContent = `${laps.length} kol · klikni na trasu pro přidání hranice`;
+  $('btnSave').disabled = !laps.length; $('btnClear').disabled = !boundaries.length;
+}
+
+/* ---------- export TCX ---------- */
+function buildTCX() {
+  const type = track.type.toLowerCase();
+  const sport = type === 'running' ? 'Running' : ['cycling','biking'].includes(type) ? 'Biking' : 'Other';
+  const trigger = edited || $('mode').value === 'manual' ? 'Manual' : ($('mode').value === 'time' ? 'Time' : 'Distance');
+  // Kořenový element musí nést i xsi:schemaLocation — přísnější importy TCX
+  // bez něj odmítají, samotný xmlns nestačí.
+  let out = '<?xml version="1.0" encoding="UTF-8"?>\n'
+    + '<TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"'
+    + ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
+    + ' xsi:schemaLocation="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2'
+    + ' http://www.garmin.com/xmlschemas/TrainingCenterDatabasev2.xsd">\n<Activities>\n';
+  out += `<Activity Sport="${sport}"><Id>${isoZ(points[0].t)}</Id>\n`;
+  laps.forEach(lap => {
+    out += `<Lap StartTime="${isoZ(lap.pts[0].t)}"><TotalTimeSeconds>${lap.seconds.toFixed(3)}</TotalTimeSeconds><DistanceMeters>${lap.distance.toFixed(3)}</DistanceMeters><Calories>0</Calories><Intensity>Active</Intensity><TriggerMethod>${trigger}</TriggerMethod>\n`;
+    let segment = null;
+    lap.pts.forEach(p => {
+      if (p.segment !== segment) { if (segment !== null) out += '</Track>\n'; out += '<Track>\n'; segment = p.segment; }
+      out += `<Trackpoint><Time>${isoZ(p.t)}</Time><Position><LatitudeDegrees>${p.lat.toFixed(7)}</LatitudeDegrees><LongitudeDegrees>${p.lon.toFixed(7)}</LongitudeDegrees></Position>`;
+      if (p.ele != null) out += `<AltitudeMeters>${p.ele.toFixed(2)}</AltitudeMeters>`;
+      // Vzdálenost je od startu celé aktivity, nikoliv od začátku kola.
+      out += `<DistanceMeters>${p.s.toFixed(3)}</DistanceMeters>`;
+      if (p.x?.hr != null) out += `<HeartRateBpm><Value>${Math.round(p.x.hr)}</Value></HeartRateBpm>`;
+      out += '</Trackpoint>\n';
+    });
+    out += '</Track></Lap>\n';
+  });
+  out += '</Activity></Activities></TrainingCenterDatabase>\n';
+  if (new DOMParser().parseFromString(out,'application/xml').querySelector('parsererror')) throw new Error('Export obsahuje neplatné XML.');
+  return out;
+}
+
+/* ---------- načtení a obsluha ---------- */
+let loadVersion = 0;
+async function load(files) {
+  const version = ++loadVersion;
+  try {
+    if (files.length !== 1) throw new Error('Vyber právě jeden GPX soubor.');
+    const f = files[0], parsed = parseGPX(await f.text(), f.name);
+    if (version !== loadVersion) return;
+    const all = []; let offset = 0;
+    parsed.segs.forEach((seg,segment) => {
+      const path = withDist(seg);
+      seg.forEach((p,i) => all.push({...p,s:offset+path[i].s,segment}));
+      offset += path.at(-1).s;
+    });
+    if (all.some(p => Math.abs(p.lat) > 90 || Math.abs(p.lon) > 180)) throw new Error('Souřadnice jsou mimo platný rozsah.');
+    if (all.length < 2 || offset < .001 || all.at(-1).t <= all[0].t) throw new Error('Trasa musí mít nenulovou vzdálenost a dobu.');
+    if (all.some((p,i) => i && p.t < all[i-1].t)) throw new Error('Časové značky musí být seřazené od začátku do konce.');
+    all.forEach(p => {
+      if (!Number.isFinite(p.ele)) p.ele = null;
+      if (p.x?.hr != null && (p.x.hr < 1 || p.x.hr > 255)) p.x = null;
+    });
+    track = parsed; points = all; boundaries = []; selected = -1; edited = false;
+    $('trackName').textContent = track.name;
+    $('length').textContent = (offset/1000).toFixed(2).replace('.',',')+' km';
+    $('duration').textContent = fmtDur((all.at(-1).t-all[0].t)/1000);
+    $('message').textContent = ''; $('btnApply').disabled = false;
+    render(); applyMode();
+    // Kontejner může mít zrovna nulovou velikost (stránka na pozadí, minimalizované
+    // okno) — fitBounds by pak vyšel na zoom 0 a invalidateSize to nespraví,
+    // protože není co měřit. Počkáme, až mapa rozměry doopravdy dostane.
+    const bb = L.latLngBounds(all.map(p => [p.lat,p.lon])).pad(.05);
+    const fit = () => { map.invalidateSize({animate:false,pan:false}); map.fitBounds(bb, {maxZoom:17}); };
+    if (map.getSize().x > 0 && map.getSize().y > 0) fit();
+    else {
+      let n = 0;
+      const poll = setInterval(() => {
+        if ((map.getSize().x > 0 && map.getSize().y > 0) || ++n > 40) { clearInterval(poll); if (map.getSize().x > 0) fit(); }
+      }, 150);
+      if (window.ResizeObserver) new ResizeObserver((_, o) => {
+        if (map.getSize().x > 0) { o.disconnect(); clearInterval(poll); fit(); }
+      }).observe(document.getElementById('map'));
+    }
+  } catch (e) { if (version === loadVersion) $('message').textContent = 'Nepovedlo se načíst: '+e.message; }
+}
+$('btnLoad').onclick = () => $('file').click();
+$('drop').onclick = () => $('file').click();
+$('drop').onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('file').click(); } };
+$('file').onchange = e => { if (e.target.files.length) load([...e.target.files]); e.target.value = ''; };
+['dragenter','dragover'].forEach(ev => document.addEventListener(ev,e => { e.preventDefault(); $('drop').classList.add('over'); }));
+['dragleave','drop'].forEach(ev => document.addEventListener(ev,e => { e.preventDefault(); if (ev === 'drop' || e.target === document.body) $('drop').classList.remove('over'); }));
+document.addEventListener('drop',e => {
+  const fs = [...(e.dataTransfer?.files || [])].filter(f => /\.gpx$/i.test(f.name));
+  if (fs.length) load(fs); else $('message').textContent = 'Přetáhni soubor s příponou .gpx.';
+});
+$('mode').onchange = () => {
+  for (const [id,mode] of [['distanceFields','distance'],['timeFields','time'],['intervalFields','interval']]) $(id).hidden = $('mode').value !== mode;
+  applyMode();
+};
+$('btnApply').onclick = applyMode;
+$('btnClear').onclick = () => { boundaries = []; edited = true; render(); };
+$('btnSave').onclick = () => {
+  try {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([buildTCX()],{type:'application/vnd.garmin.tcx+xml'}));
+    a.download = (track.name.replace(/[\/:*?"<>|\x00-\x1f]/g,'_').replace(/[. ]+$/,'') || 'aktivita')+'.tcx';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href),1000);
+  } catch (e) { $('message').textContent = 'Nepovedlo se vytvořit TCX: '+e.message; }
+};
+</script>
+</body>
+</html>

@@ -16,7 +16,7 @@ podle toho, kudy jsi skutečně šel.
 stopy. Když jsi mezitím jen stál (fotil na vrcholu), rozpozná to a nechá tam pauzu.
 
 
-## Tři nástroje
+## Čtyři nástroje
 
 **`index.html` — GPX Fixer.** Najde jednotlivé problémy a nabídne opravu. Na skok,
 výpadek nebo spadlou aplikaci to stačí.
@@ -48,6 +48,19 @@ zapnout hodinky.
 
 Tempo vychází rovnoměrné po celé délce a výška se nevyplňuje (Strava si ji dopočítá
 z vlastního modelu přesněji). Je to rekonstrukce, ne záznam, a výsledek tak i vypadá.
+
+**`gpx_laps.html` — GPX Laps.** Rozdělí hotovou stopu na kola. Pro intervaly, když je
+běháš bez hodinek, co kola umí: naběháš to normálně a úseky vyznačíš až doma.
+
+Hranice kol umí položit čtyřmi způsoby — po vzdálenosti, po čase, intervalovým vzorem
+(A metrů svižně + B metrů výklus, N opakování) nebo ručně kliknutím na trasu. První tři
+jen předvyplní, pak se dá každá hranice posunout ručně.
+
+**Výstup je TCX, ne GPX.** GPX pro kola nemá element; formát, ze kterého Strava kola čte,
+je TCX. Takže sem nahraješ GPX a ven dostaneš TCX k nahrání.
+
+Dělení jede podle vzdálenosti nebo času, ne podle toho, kde jsi reálně zrychlil — když
+jsi zabral o dvacet metrů dřív, kolo to nepozná. Na to je ruční režim.
 
 ## Jak opravit stopu (GPX Fixer / Omni Fix)
 
